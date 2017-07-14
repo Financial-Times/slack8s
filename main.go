@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nlopes/slack"
+	"crypto/tls"
 )
 
 // The GET request to the Kubernetes event watch API returns a JSON object
@@ -33,6 +34,7 @@ type Event struct {
 	FirstTimestamp time.Time           `json:"firstTimestamp"`
 	LastTimestamp  time.Time           `json:"lastTimestamp"`
 	Count          int                 `json:"count"`
+	Type	       string		   `json:type`
 }
 
 type EventMetadata struct {
@@ -56,6 +58,11 @@ func send_message(e Event, color string) error {
 		// The fallback message shows in clients such as IRC or OS X notifications.
 		Fallback: e.Message,
 		Fields: []slack.AttachmentField{
+			slack.AttachmentField{
+				Title: "Env",
+				Value: os.Getenv("APP_ENV"),
+				Short: true,
+			},
 			slack.AttachmentField{
 				Title: "Namespace",
 				Value: e.Metadata.Namespace,
@@ -98,6 +105,10 @@ func send_message(e Event, color string) error {
 	}
 	params.Attachments = []slack.Attachment{attachment}
 
+	if strings.EqualFold(os.Getenv("EVENT_LEVEL"), "error" ) && attachment.Color == "good" {
+		return nil
+	}
+
 	channelID, timestamp, err := api.PostMessage(os.Getenv("SLACK_CHANNEL"), "", params)
 	if err != nil {
 		fmt.Printf("%s\n", err)
@@ -109,12 +120,20 @@ func send_message(e Event, color string) error {
 }
 
 func main() {
-	url := fmt.Sprintf("http://localhost:8001/api/v1/events?watch=true")
+	k8stoken, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err != nil {
+		log.Fatal("ReadFile: ", err)
+	}
+	url := fmt.Sprintf("https://kubernetes:443/api/v1/events?watch=true")
 	req, err := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer " + string(k8stoken))
 	if err != nil {
 		log.Fatal("NewRequest: ", err)
 	}
-	client := &http.Client{}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Fatal("Do: ", err)
@@ -145,21 +164,11 @@ func main() {
 		log.Printf("Reason: %s\nMessage: %s\nCount: %s\nFirstTimestamp: %s\nLastTimestamp: %s\n\n", e.Reason, e.Message, strconv.Itoa(e.Count), e.FirstTimestamp, e.LastTimestamp)
 
 		send := false
-		color := ""
+		color := e.Type
 
-		// @todo refactor the configuration of which things to post.
-		if e.Reason == "SuccessfulCreate" {
-			send = true
-			color = "good"
-		} else if e.Reason == "NodeReady" {
-			send = true
-			color = "good"
-		} else if e.Reason == "NodeNotReady" {
+		if color == "Warning" {
 			send = true
 			color = "warning"
-		} else if e.Reason == "NodeOutOfDisk" {
-			send = true
-			color = "danger"
 		}
 
 		// For now, dont alert multiple times, except if it's a backoff
@@ -171,13 +180,13 @@ func main() {
 			color = "danger"
 		}
 
-		// Do not send any events that are more than 1 minute old.
+		// Do not send any events that are more than 3 minutes old.
 		// This assumes events are processed quickly (very likely)
 		// in exchange for not re-notifying of events after a crash
 		// or fresh start.
 		diff := time.Now().Sub(e.LastTimestamp)
 		diffMinutes := int(diff.Minutes())
-		if diffMinutes > 1 {
+		if diffMinutes > 3 {
 			log.Printf("Supressed %s minute old message: %s", strconv.Itoa(diffMinutes), e.Message)
 			send = false
 		}
