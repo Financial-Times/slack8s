@@ -9,10 +9,11 @@ import (
 
 	"github.com/nlopes/slack"
 
-	"k8s.io/kubernetes/pkg/api"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/watch"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/pkg/watch"
+	"k8s.io/client-go/pkg/api"
 )
 
 // Sends a message to the Slack channel about the Event.
@@ -24,6 +25,16 @@ func sendMessage(e *api.Event, color string) error {
 		// The fallback message shows in clients such as IRC or OS X notifications.
 		Fallback: e.Message,
 		Fields: []slack.AttachmentField{
+			slack.AttachmentField{
+				Title: "Env",
+				Value: os.Getenv("APP_ENV"),
+				Short: true,
+			},
+			slack.AttachmentField{
+				Title: "Namespace",
+				Value: metadata.GetNamespace(),
+				Short: true,
+			},
 			slack.AttachmentField{
 				Title: "Message",
 				Value: e.Message,
@@ -61,6 +72,10 @@ func sendMessage(e *api.Event, color string) error {
 	}
 	params.Attachments = []slack.Attachment{attachment}
 
+	if strings.EqualFold(os.Getenv("EVENT_LEVEL"), "error" ) && attachment.Color == "good" {
+		return nil
+	}
+
 	channelID, timestamp, err := api.PostMessage(os.Getenv("SLACK_CHANNEL"), "", params)
 	if err != nil {
 		fmt.Printf("%s\n", err)
@@ -72,16 +87,20 @@ func sendMessage(e *api.Event, color string) error {
 }
 
 func main() {
-
-	kubeClient, err := client.NewInCluster()
+	clusterConfig, err := rest.InClusterConfig()
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		log.Fatalf("Error scanCluster must be run from inside a cluster %v", err)
+	}
+	// creates the clientset
+	clientset, err := kubernetes.NewForConfig(clusterConfig)
+	if err != nil {
+		panic(err.Error())
 	}
 
 	// Setup a watcher for events.
-	eventClient := kubeClient.Events(api.NamespaceAll)
-	options := api.ListOptions{LabelSelector: labels.Everything()}
-	w, err := eventClient.Watch(options)
+	eventClient := clientset.Events(api.NamespaceAll)
+	w, err := eventClient.Watch(v1.ListOptions{})
+
 	if err != nil {
 		log.Fatalf("Failed to set up watch: %v", err)
 	}
@@ -90,6 +109,7 @@ func main() {
 		case watchEvent, _ := <-w.ResultChan():
 
 			e, _ := watchEvent.Object.(*api.Event)
+			log.Printf("Reason %v", e)
 
 			// Log all events for now.
 			log.Printf("Reason: %s\nMessage: %s\nCount: %s\nFirstTimestamp: %s\nLastTimestamp: %s\n\n", e.Reason, e.Message, strconv.Itoa(int(e.Count)), e.FirstTimestamp, e.LastTimestamp)

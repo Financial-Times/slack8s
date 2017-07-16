@@ -1,0 +1,4 @@
+package: github.com/Financial-Times/slack8s
+import:
+- package: k8s.io/client-go
+  version: v2.0.0
