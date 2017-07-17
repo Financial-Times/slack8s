@@ -175,8 +175,11 @@ func main() {
 		if e.Count > 1 {
 			send = false
 		}
-		if e.Reason == "BackOff" && e.Count == 3 {
+		if e.Reason == "BackOff" && e.Count < 10 {
 			send = true
+			color = "warning"
+		}
+		if e.Count == 1 {
 			color = "danger"
 		}
 
